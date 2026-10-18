@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import {
   CanActivate,
   ExecutionContext,
-  ForbiddenElception,
+  ForbiddenException,
   Inject,
   Injectable,
   UnauthorizedException
