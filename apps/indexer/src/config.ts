@@ -38,6 +38,7 @@ if (!isStellarNetwork(stellarNetwork)) {
 export const STELLAR_NETWORK = stellarNetwork;
 export const REGISTRY_PORT = Number(process.env.REGISTRY_PORT ?? 3002);
 export const WEBHOOK_CONCURRENCY = positiveIntegerEnv("WEBHOOK_CONCURRENCY", 10);
+export const POLL_ONCE = process.env.POLL_ONCE === "true";
 export const POLL_INTERVAL_MS = 5000;
 export const EVENTS_BATCH_LIMIT = 100;
 export const MAX_RETRIES = 5;
