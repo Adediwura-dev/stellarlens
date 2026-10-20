@@ -17,11 +17,11 @@ import {
 } from "../src/config.js";
 import { processEventsBatch } from "../src/events.js";
 import { registerContract } from "../src/registry.js";
-import { deliverWebhooksForEvent } from "../src/webhooks.js";
+import { assertPublicWebhookUrl, deliverWebhooksForEvent } from "../src/webhooks.js";
 import { mockJsonRpc, TEST_RPC_URL } from "./rpc-mocks.js";
 import { getTestDb, mswServer } from "./setup.js";
 
-const WEBHOOK_URL = "http://localhost:9999/webhook-endpoint";
+const WEBHOOK_URL = "http://8.8.8.8/webhook-endpoint";
 
 function symbolXdr(value: string): string {
   return nativeToScVal(value, { type: "symbol" }).toXdr("base64");
@@ -46,12 +46,40 @@ function buildLatestLedger(sequence: number) {
   };
 }
 
-async function registerWebhook(contractId: number, secret: string, eventTypes?: string[]) {
+async function registerWebhook(
+  contractId: number,
+  secret: string,
+  eventTypes?: string[],
+  active = true
+) {
   const db = getTestDb();
   await db
     .insert(webhooksTable)
     .values({ contractId, url: WEBHOOK_URL, secret, eventTypes: eventTypes ?? null });
+    .values({ contractId, url: WEBHOOK_URL, secret, eventTypes: eventTypes ?? null, active });
 }
+
+describe("webhook URL IP validation", () => {
+  it("rejects a URL that resolves to a private IPv4 address", async () => {
+    await expect(
+      assertPublicWebhookUrl("https://hooks.example.com", async () => [{ address: "10.0.0.12" }])
+    ).rejects.toThrow("non-public IP address");
+  });
+
+  it("rejects a URL with an IPv6 unique-local address", async () => {
+    await expect(assertPublicWebhookUrl("http://[fd12::1]/webhook")).rejects.toThrow(
+      "non-public IP address"
+    );
+  });
+
+  it("allows a URL that resolves to a public IP address", async () => {
+    await expect(
+      assertPublicWebhookUrl("https://hooks.example.com", async () => [
+        { address: "93.184.216.34" }
+      ])
+    ).resolves.toBeUndefined();
+  });
+});
 
 describe("webhook delivery", () => {
   it("fires a signed POST to every webhook registered for the indexed event's contract", async () => {
@@ -223,10 +251,14 @@ describe("webhook delivery", () => {
     );
 
     const { indexedCount } = await processEventsBatch(db, makeServer());
-    consoleError.mockRestore();
 
     expect(indexedCount).toBe(1);
     expect(webhookSpy).toHaveBeenCalledTimes(WEBHOOK_MAX_RETRIES + 1);
+    expect(consoleError).toHaveBeenCalledWith(
+      expect.stringContaining("CONTRACT_HOOK_DELIVERY_FAILED"),
+      expect.any(Error)
+    );
+    consoleError.mockRestore();
 
     const [event] = await db.select().from(eventsTable);
     const [delivery] = await db.select().from(webhookDeliveries);
@@ -269,6 +301,7 @@ describe("webhook delivery", () => {
       deliverWebhooksForEvent(failingDb, {
         eventId: 42,
         contractId: 1,
+        contractAddress: "CONTRACT_DELIVERY_LOG",
         ledger: 1,
         txHash: "2".repeat(64),
         topic: ["fee"],
@@ -361,6 +394,44 @@ describe("webhook delivery", () => {
     await processEventsBatch(db, makeServer());
 
     expect(webhookSpy).not.toHaveBeenCalled();
+  });
+
+  it("skips an inactive webhook", async () => {
+    const db = getTestDb();
+    const contract = await registerContract(db, {
+      address: "CONTRACT_HOOK_INACTIVE",
+      network: NETWORK
+    });
+    await registerWebhook(contract.id, "inactive-secret", undefined, false);
+
+    const webhookSpy = vi.fn(() => HttpResponse.json({ ok: true }));
+
+    mswServer.use(
+      mockJsonRpc({
+        getLatestLedger: () => buildLatestLedger(8200),
+        getEvents: () => ({
+          events: [
+            {
+              id: "0000000000000000000-0000000000",
+              ledger: 8205,
+              txHash: "c".repeat(64),
+              contractId: "CONTRACT_HOOK_INACTIVE",
+              topic: [symbolXdr("fee")],
+              value: i128Xdr(-1n)
+            }
+          ],
+          cursor: "CURSOR_HOOK_INACTIVE",
+          latestLedger: 8205
+        })
+      }),
+      http.post(WEBHOOK_URL, webhookSpy)
+    );
+
+    await processEventsBatch(db, makeServer());
+
+    expect(webhookSpy).not.toHaveBeenCalled();
+    const deliveryRows = await db.select().from(webhookDeliveries);
+    expect(deliveryRows).toHaveLength(0);
   });
 
   it("fires a webhook whose eventTypes includes the event's topic", async () => {
