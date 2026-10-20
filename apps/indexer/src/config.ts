@@ -22,7 +22,20 @@ function positiveIntegerEnv(name: string, defaultValue: number): number {
 }
 
 export const SOROBAN_RPC_URL = requireEnv("SOROBAN_RPC_URL");
-export const STELLAR_NETWORK = requireEnv("STELLAR_NETWORK");
+export const STELLAR_NETWORKS = ["testnet", "futurenet", "mainnet", "standalone"] as const;
+export type StellarNetwork = (typeof STELLAR_NETWORKS)[number];
+
+const stellarNetwork = requireEnv("STELLAR_NETWORK");
+function isStellarNetwork(value: string): value is StellarNetwork {
+  return STELLAR_NETWORKS.some((network) => network === value);
+}
+
+if (!isStellarNetwork(stellarNetwork)) {
+  throw new Error(
+    `STELLAR_NETWORK must be one of: ${STELLAR_NETWORKS.join(", ")}; received "${stellarNetwork}"`
+  );
+}
+export const STELLAR_NETWORK = stellarNetwork;
 export const REGISTRY_PORT = Number(process.env.REGISTRY_PORT ?? 3002);
 export const WEBHOOK_CONCURRENCY = positiveIntegerEnv("WEBHOOK_CONCURRENCY", 10);
 export const POLL_INTERVAL_MS = 5000;
