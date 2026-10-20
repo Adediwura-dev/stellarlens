@@ -49,6 +49,22 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+function isDnsResolutionFailure(err: unknown): boolean {
+  const dnsErrorCodes = new Set(["ENOTFOUND", "EAI_NONAME", "ENODATA", "EAI_FAIL"]);
+  const seen = new Set<object>();
+  let current = err;
+
+  while (current && typeof current === "object" && !seen.has(current)) {
+    seen.add(current);
+    if ("code" in current && typeof current.code === "string" && dnsErrorCodes.has(current.code)) {
+      return true;
+    }
+    current = "cause" in current ? current.cause : undefined;
+  }
+
+  return false;
+}
+
 /**
  * Persist a delivery outcome without letting an observability write break ingestion.
  * This is intentionally best-effort: persistence errors are logged and swallowed.
@@ -105,7 +121,8 @@ export async function deliverWebhooksForEvent(db: Database, payload: WebhookEven
           {
             maxRetries: WEBHOOK_MAX_RETRIES,
             baseDelayMs: WEBHOOK_RETRY_BASE_DELAY_MS,
-            maxDelayMs: WEBHOOK_RETRY_MAX_DELAY_MS
+            maxDelayMs: WEBHOOK_RETRY_MAX_DELAY_MS,
+            shouldRetry: (err) => !isDnsResolutionFailure(err)
           }
         );
 
@@ -118,14 +135,22 @@ export async function deliverWebhooksForEvent(db: Database, payload: WebhookEven
           deliveredAt: new Date()
         });
       } catch (err) {
-        console.error(`webhook ${webhook.id} delivery failed after retries:`, err);
+        const dnsFailure = isDnsResolutionFailure(err);
+        console.error(
+          dnsFailure
+            ? `webhook ${webhook.id} endpoint ${webhook.url} is unreachable due to DNS resolution failure:`
+            : `webhook ${webhook.id} delivery failed after retries:`,
+          err
+        );
 
         await recordDelivery(db, {
           webhookId: webhook.id,
           eventId: payload.eventId,
           status: "failed",
           attempts,
-          lastError: errorMessage(err),
+          lastError: dnsFailure
+            ? `DNS resolution failed for ${webhook.url}: ${errorMessage(err)}`
+            : errorMessage(err),
           deliveredAt: null
         });
       }
