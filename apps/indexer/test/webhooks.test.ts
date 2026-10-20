@@ -205,10 +205,14 @@ describe("webhook delivery", () => {
     );
 
     const { indexedCount } = await processEventsBatch(db, makeServer());
-    consoleError.mockRestore();
 
     expect(indexedCount).toBe(1);
     expect(webhookSpy).toHaveBeenCalledTimes(WEBHOOK_MAX_RETRIES + 1);
+    expect(consoleError).toHaveBeenCalledWith(
+      expect.stringContaining("CONTRACT_HOOK_DELIVERY_FAILED"),
+      expect.any(Error)
+    );
+    consoleError.mockRestore();
 
     const [event] = await db.select().from(eventsTable);
     const [delivery] = await db.select().from(webhookDeliveries);
@@ -251,6 +255,7 @@ describe("webhook delivery", () => {
       deliverWebhooksForEvent(failingDb, {
         eventId: 42,
         contractId: 1,
+        contractAddress: "CONTRACT_DELIVERY_LOG",
         ledger: 1,
         txHash: "2".repeat(64),
         topic: ["fee"],

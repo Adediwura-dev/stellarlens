@@ -18,6 +18,7 @@ import { withRetry } from "./retry.js";
 export interface WebhookEventPayload {
   eventId: number;
   contractId: number;
+  contractAddress: string;
   ledger: number;
   txHash: string;
   topic: unknown[];
@@ -187,7 +188,8 @@ export async function deliverWebhooksForEvent(
     return;
   }
 
-  const body = JSON.stringify(payload);
+  const { contractAddress, ...eventPayload } = payload;
+  const body = JSON.stringify(eventPayload);
 
   await Promise.all(
     recipients.map(async (webhook) => {
@@ -218,7 +220,10 @@ export async function deliverWebhooksForEvent(
           deliveredAt: new Date()
         });
       } catch (err) {
-        console.error(`webhook ${webhook.id} delivery failed after retries:`, err);
+        console.error(
+          `webhook ${webhook.id} for contract ${contractAddress} delivery failed after retries:`,
+          err
+        );
 
         await recordDelivery(db, {
           webhookId: webhook.id,
