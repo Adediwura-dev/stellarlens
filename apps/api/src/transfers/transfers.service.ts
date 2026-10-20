@@ -32,6 +32,9 @@ export class TransfersService {
     if (query.to !== undefined) {
       conditions.push(eq(tokenTransfers.to, query.to));
     }
+    if (query.asset !== undefined) {
+      conditions.push(eq(tokenTransfers.asset, query.asset));
+    }
 
     const rows = await this.db
       .select()
