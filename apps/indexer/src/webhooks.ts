@@ -1,7 +1,17 @@
 import { createHmac } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { webhookDeliveries as webhookDeliveriesTable, webhooks as webhooksTable, type Database } from "@stellarlens/db";
-import { WEBHOOK_MAX_RETRIES, WEBHOOK_RETRY_BASE_DELAY_MS, WEBHOOK_RETRY_MAX_DELAY_MS, WEBHOOK_TIMEOUT_MS } from "./config.js";
+import {
+  webhookDeliveries as webhookDeliveriesTable,
+  webhooks as webhooksTable,
+  type Database
+} from "@stellarlens/db";
+import {
+  WEBHOOK_CONCURRENCY,
+  WEBHOOK_MAX_RETRIES,
+  WEBHOOK_RETRY_BASE_DELAY_MS,
+  WEBHOOK_RETRY_MAX_DELAY_MS,
+  WEBHOOK_TIMEOUT_MS
+} from "./config.js";
 import { withRetry } from "./retry.js";
 
 export interface WebhookEventPayload {
@@ -37,7 +47,10 @@ async function postWebhook(url: string, body: string, signature: string): Promis
 }
 
 /** A webhook with no eventTypes fires on everything; otherwise the event's topic[0] must be in the list. */
-function matchesEventTypes(webhook: { eventTypes: string[] | null }, payload: WebhookEventPayload): boolean {
+function matchesEventTypes(
+  webhook: { eventTypes: string[] | null },
+  payload: WebhookEventPayload
+): boolean {
   if (!webhook.eventTypes || webhook.eventTypes.length === 0) {
     return true;
   }
@@ -72,7 +85,10 @@ async function recordDelivery(
 }
 
 /** Best-effort delivery: failures are logged, never thrown, so one bad endpoint can't stall indexing. */
-export async function deliverWebhooksForEvent(db: Database, payload: WebhookEventPayload): Promise<void> {
+export async function deliverWebhooksForEvent(
+  db: Database,
+  payload: WebhookEventPayload
+): Promise<void> {
   let recipients: Array<typeof webhooksTable.$inferSelect>;
 
   try {
@@ -80,7 +96,10 @@ export async function deliverWebhooksForEvent(db: Database, payload: WebhookEven
       await db.select().from(webhooksTable).where(eq(webhooksTable.contractId, payload.contractId))
     ).filter((webhook) => matchesEventTypes(webhook, payload));
   } catch (err) {
-    console.error(`webhook recipients could not be loaded for contract ${payload.contractId}:`, err);
+    console.error(
+      `webhook recipients could not be loaded for contract ${payload.contractId}:`,
+      err
+    );
     return;
   }
 
@@ -90,44 +109,50 @@ export async function deliverWebhooksForEvent(db: Database, payload: WebhookEven
 
   const body = JSON.stringify(payload);
 
+  let nextRecipientIndex = 0;
+  const workerCount = Math.min(WEBHOOK_CONCURRENCY, recipients.length);
+
   await Promise.all(
-    recipients.map(async (webhook) => {
-      let attempts = 0;
+    Array.from({ length: workerCount }, async () => {
+      while (nextRecipientIndex < recipients.length) {
+        const webhook = recipients[nextRecipientIndex++];
+        let attempts = 0;
 
-      try {
-        const signature = createHmac("sha256", webhook.secret).update(body).digest("hex");
-        await withRetry(
-          `webhook:${webhook.id}`,
-          () => {
-            attempts += 1;
-            return postWebhook(webhook.url, body, signature);
-          },
-          {
-            maxRetries: WEBHOOK_MAX_RETRIES,
-            baseDelayMs: WEBHOOK_RETRY_BASE_DELAY_MS,
-            maxDelayMs: WEBHOOK_RETRY_MAX_DELAY_MS
-          }
-        );
+        try {
+          const signature = createHmac("sha256", webhook.secret).update(body).digest("hex");
+          await withRetry(
+            `webhook:${webhook.id}`,
+            () => {
+              attempts += 1;
+              return postWebhook(webhook.url, body, signature);
+            },
+            {
+              maxRetries: WEBHOOK_MAX_RETRIES,
+              baseDelayMs: WEBHOOK_RETRY_BASE_DELAY_MS,
+              maxDelayMs: WEBHOOK_RETRY_MAX_DELAY_MS
+            }
+          );
 
-        await recordDelivery(db, {
-          webhookId: webhook.id,
-          eventId: payload.eventId,
-          status: "success",
-          attempts,
-          lastError: null,
-          deliveredAt: new Date()
-        });
-      } catch (err) {
-        console.error(`webhook ${webhook.id} delivery failed after retries:`, err);
+          await recordDelivery(db, {
+            webhookId: webhook.id,
+            eventId: payload.eventId,
+            status: "success",
+            attempts,
+            lastError: null,
+            deliveredAt: new Date()
+          });
+        } catch (err) {
+          console.error(`webhook ${webhook.id} delivery failed after retries:`, err);
 
-        await recordDelivery(db, {
-          webhookId: webhook.id,
-          eventId: payload.eventId,
-          status: "failed",
-          attempts,
-          lastError: errorMessage(err),
-          deliveredAt: null
-        });
+          await recordDelivery(db, {
+            webhookId: webhook.id,
+            eventId: payload.eventId,
+            status: "failed",
+            attempts,
+            lastError: errorMessage(err),
+            deliveredAt: null
+          });
+        }
       }
     })
   );

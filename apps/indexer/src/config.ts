@@ -8,9 +8,23 @@ function requireEnv(name: string): string {
   return value;
 }
 
+function positiveIntegerEnv(name: string, defaultValue: number): number {
+  const value = process.env[name];
+  if (value === undefined) {
+    return defaultValue;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`${name} must be a positive integer; received "${value}"`);
+  }
+  return parsed;
+}
+
 export const SOROBAN_RPC_URL = requireEnv("SOROBAN_RPC_URL");
 export const STELLAR_NETWORK = requireEnv("STELLAR_NETWORK");
 export const REGISTRY_PORT = Number(process.env.REGISTRY_PORT ?? 3002);
+export const WEBHOOK_CONCURRENCY = positiveIntegerEnv("WEBHOOK_CONCURRENCY", 10);
 export const POLL_INTERVAL_MS = 5000;
 export const EVENTS_BATCH_LIMIT = 100;
 export const MAX_RETRIES = 5;
