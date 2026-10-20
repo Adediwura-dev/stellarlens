@@ -66,6 +66,10 @@ env vars each app needs), log in with the seeded admin account, and generate you
 | `packages/cli` | `pnpm --filter @stellarlens/cli dev` | Needs `STELLARLENS_API_URL` / `STELLARLENS_API_KEY` to actually run the built binary — see `packages/cli/README.md` |
 | `packages/db` | n/a (library) | `db:generate` / `db:migrate` / `db:studio` wrap `drizzle-kit`; needs `DATABASE_URL` and Postgres running |
 
+The indexer runs as a daemon by default. Set `POLL_ONCE=true` to process one poll cycle and exit; in
+this mode the registry server is not started. `WEBHOOK_CONCURRENCY` optionally sets the maximum
+number of simultaneous webhook deliveries per event (default: `10`).
+
 Full pipeline check before opening a PR:
 
 ```bash

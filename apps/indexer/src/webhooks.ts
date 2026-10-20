@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { and, eq } from "drizzle-orm";
@@ -8,6 +9,7 @@ import {
   type Database
 } from "@stellarlens/db";
 import {
+  WEBHOOK_CONCURRENCY,
   WEBHOOK_MAX_RETRIES,
   WEBHOOK_RETRY_BASE_DELAY_MS,
   WEBHOOK_RETRY_MAX_DELAY_MS,
@@ -207,7 +209,50 @@ export async function deliverWebhooksForEvent(
   const { contractAddress, ...eventPayload } = payload;
   const body = JSON.stringify(eventPayload);
 
+  let nextRecipientIndex = 0;
+  const workerCount = Math.min(WEBHOOK_CONCURRENCY, recipients.length);
+
   await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextRecipientIndex < recipients.length) {
+        const webhook = recipients[nextRecipientIndex++];
+        let attempts = 0;
+
+        try {
+          const signature = createHmac("sha256", webhook.secret).update(body).digest("hex");
+          await withRetry(
+            `webhook:${webhook.id}`,
+            () => {
+              attempts += 1;
+              return postWebhook(webhook.url, body, signature);
+            },
+            {
+              maxRetries: WEBHOOK_MAX_RETRIES,
+              baseDelayMs: WEBHOOK_RETRY_BASE_DELAY_MS,
+              maxDelayMs: WEBHOOK_RETRY_MAX_DELAY_MS
+            }
+          );
+
+          await recordDelivery(db, {
+            webhookId: webhook.id,
+            eventId: payload.eventId,
+            status: "success",
+            attempts,
+            lastError: null,
+            deliveredAt: new Date()
+          });
+        } catch (err) {
+          console.error(`webhook ${webhook.id} delivery failed after retries:`, err);
+
+          await recordDelivery(db, {
+            webhookId: webhook.id,
+            eventId: payload.eventId,
+            status: "failed",
+            attempts,
+            lastError: errorMessage(err),
+            deliveredAt: null
+          });
+        }
     recipients.map(async (webhook) => {
       let attempts = 0;
 

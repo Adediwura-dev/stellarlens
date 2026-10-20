@@ -10,7 +10,11 @@ import {
 } from "@stellarlens/db";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it, vi } from "vitest";
-import { WEBHOOK_MAX_RETRIES, STELLAR_NETWORK as NETWORK } from "../src/config.js";
+import {
+  WEBHOOK_CONCURRENCY,
+  WEBHOOK_MAX_RETRIES,
+  STELLAR_NETWORK as NETWORK
+} from "../src/config.js";
 import { processEventsBatch } from "../src/events.js";
 import { registerContract } from "../src/registry.js";
 import { assertPublicWebhookUrl, deliverWebhooksForEvent } from "../src/webhooks.js";
@@ -51,6 +55,7 @@ async function registerWebhook(
   const db = getTestDb();
   await db
     .insert(webhooksTable)
+    .values({ contractId, url: WEBHOOK_URL, secret, eventTypes: eventTypes ?? null });
     .values({ contractId, url: WEBHOOK_URL, secret, eventTypes: eventTypes ?? null, active });
 }
 
@@ -126,6 +131,47 @@ describe("webhook delivery", () => {
     expect(payload.contractId).toBe(contract.id);
     expect(payload.ledger).toBe(5005);
     expect(payload.txHash).toBe("d".repeat(64));
+  });
+
+  it("caps concurrent deliveries at the configured limit", async () => {
+    const db = getTestDb();
+    const contract = await registerContract(db, {
+      address: "CONTRACT_HOOK_CONCURRENCY",
+      network: NETWORK
+    });
+    const recipientCount = WEBHOOK_CONCURRENCY + 3;
+    await db.insert(webhooksTable).values(
+      Array.from({ length: recipientCount }, (_, index) => ({
+        contractId: contract.id,
+        url: WEBHOOK_URL,
+        secret: `secret-${index}`,
+        eventTypes: null
+      }))
+    );
+
+    let activeDeliveries = 0;
+    let maxConcurrentDeliveries = 0;
+    mswServer.use(
+      http.post(WEBHOOK_URL, async () => {
+        activeDeliveries += 1;
+        maxConcurrentDeliveries = Math.max(maxConcurrentDeliveries, activeDeliveries);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        activeDeliveries -= 1;
+        return HttpResponse.json({ ok: true });
+      })
+    );
+
+    await deliverWebhooksForEvent(db, {
+      eventId: 1,
+      contractId: contract.id,
+      ledger: 1,
+      txHash: "3".repeat(64),
+      topic: ["fee"],
+      value: "-1"
+    });
+
+    expect(maxConcurrentDeliveries).toBeLessThanOrEqual(WEBHOOK_CONCURRENCY);
+    expect(maxConcurrentDeliveries).toBe(WEBHOOK_CONCURRENCY);
   });
 
   it("persists a successful delivery with its attempt count and deliveredAt", async () => {
