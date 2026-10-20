@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { webhookDeliveries as webhookDeliveriesTable, webhooks as webhooksTable, type Database } from "@stellarlens/db";
 import { WEBHOOK_MAX_RETRIES, WEBHOOK_RETRY_BASE_DELAY_MS, WEBHOOK_RETRY_MAX_DELAY_MS, WEBHOOK_TIMEOUT_MS } from "./config.js";
 import { withRetry } from "./retry.js";
@@ -77,7 +77,10 @@ export async function deliverWebhooksForEvent(db: Database, payload: WebhookEven
 
   try {
     recipients = (
-      await db.select().from(webhooksTable).where(eq(webhooksTable.contractId, payload.contractId))
+      await db
+        .select()
+        .from(webhooksTable)
+        .where(and(eq(webhooksTable.contractId, payload.contractId), eq(webhooksTable.active, true)))
     ).filter((webhook) => matchesEventTypes(webhook, payload));
   } catch (err) {
     console.error(`webhook recipients could not be loaded for contract ${payload.contractId}:`, err);

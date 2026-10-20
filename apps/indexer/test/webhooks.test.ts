@@ -42,9 +42,11 @@ function buildLatestLedger(sequence: number) {
   };
 }
 
-async function registerWebhook(contractId: number, secret: string, eventTypes?: string[]) {
+async function registerWebhook(contractId: number, secret: string, eventTypes?: string[], active = true) {
   const db = getTestDb();
-  await db.insert(webhooksTable).values({ contractId, url: WEBHOOK_URL, secret, eventTypes: eventTypes ?? null });
+  await db
+    .insert(webhooksTable)
+    .values({ contractId, url: WEBHOOK_URL, secret, eventTypes: eventTypes ?? null, active });
 }
 
 describe("webhook delivery", () => {
@@ -298,6 +300,41 @@ describe("webhook delivery", () => {
     await processEventsBatch(db, makeServer());
 
     expect(webhookSpy).not.toHaveBeenCalled();
+  });
+
+  it("skips an inactive webhook", async () => {
+    const db = getTestDb();
+    const contract = await registerContract(db, { address: "CONTRACT_HOOK_INACTIVE", network: NETWORK });
+    await registerWebhook(contract.id, "inactive-secret", undefined, false);
+
+    const webhookSpy = vi.fn(() => HttpResponse.json({ ok: true }));
+
+    mswServer.use(
+      mockJsonRpc({
+        getLatestLedger: () => buildLatestLedger(8200),
+        getEvents: () => ({
+          events: [
+            {
+              id: "0000000000000000000-0000000000",
+              ledger: 8205,
+              txHash: "c".repeat(64),
+              contractId: "CONTRACT_HOOK_INACTIVE",
+              topic: [symbolXdr("fee")],
+              value: i128Xdr(-1n)
+            }
+          ],
+          cursor: "CURSOR_HOOK_INACTIVE",
+          latestLedger: 8205
+        })
+      }),
+      http.post(WEBHOOK_URL, webhookSpy)
+    );
+
+    await processEventsBatch(db, makeServer());
+
+    expect(webhookSpy).not.toHaveBeenCalled();
+    const deliveryRows = await db.select().from(webhookDeliveries);
+    expect(deliveryRows).toHaveLength(0);
   });
 
   it("fires a webhook whose eventTypes includes the event's topic", async () => {
