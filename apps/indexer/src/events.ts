@@ -7,7 +7,7 @@ import {
   type Database
 } from "@stellarlens/db";
 import { EVENTS_BATCH_LIMIT, STELLAR_NETWORK } from "./config.js";
-import { decodeScVal } from "./decode.js";
+import { tryDecodeScVal } from "./decode.js";
 import { loadRegisteredContracts } from "./registry.js";
 import { detectTransfer } from "./transfers.js";
 import { withRetry } from "./retry.js";
@@ -19,6 +19,44 @@ async function getStoredCursor(db: Database): Promise<string | undefined> {
     .from(indexerCheckpoints)
     .where(eq(indexerCheckpoints.network, STELLAR_NETWORK));
   return row?.cursor;
+}
+
+type RawEvent = Awaited<ReturnType<rpc.Server["_getEvents"]>>["events"][number];
+
+interface DecodeError {
+  field: string;
+  error: string;
+}
+
+interface DecodedEventPayload {
+  decodedTopic: unknown[];
+  decodedValue: unknown;
+  decodeErrors: DecodeError[];
+}
+
+function decodeEventPayload(event: RawEvent): DecodedEventPayload {
+  const decodeErrors: DecodeError[] = [];
+
+  const decodeField = (field: string, base64Xdr: string): unknown => {
+    const result = tryDecodeScVal(base64Xdr);
+    if (result.ok) {
+      return result.value;
+    }
+    decodeErrors.push({ field, error: result.error });
+    return null;
+  };
+
+  const decodedTopic = (event.topic ?? []).map((topic, index) => decodeField(`topic[${index}]`, topic));
+  const decodedValue = decodeField("value", event.value);
+
+  if (decodeErrors.length > 0) {
+    const details = decodeErrors.map(({ field, error }) => `${field}: ${error}`).join("; ");
+    console.error(
+      `failed to decode event ${event.id} (contract=${event.contractId}, ledger=${event.ledger}, tx=${event.txHash}): ${details}`
+    );
+  }
+
+  return { decodedTopic, decodedValue, decodeErrors };
 }
 
 export interface ProcessEventsBatchResult {
@@ -59,8 +97,7 @@ export async function processEventsBatch(
       indexedCount += 1;
 
       const rawTopic = event.topic ?? [];
-      const decodedTopic = rawTopic.map(decodeScVal);
-      const decodedValue = decodeScVal(event.value);
+      const { decodedTopic, decodedValue, decodeErrors } = decodeEventPayload(event);
 
       const [insertedEvent] = await tx
         .insert(eventsTable)
@@ -81,7 +118,8 @@ export async function processEventsBatch(
             decoded: {
               topic: decodedTopic,
               value: decodedValue
-            }
+            },
+            ...(decodeErrors.length > 0 && { decodeErrors })
           }
         })
         .returning({ id: eventsTable.id });

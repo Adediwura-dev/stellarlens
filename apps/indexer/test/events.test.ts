@@ -10,6 +10,8 @@ import { getTestDb, mswServer } from "./setup.js";
 
 const ADDRESS_A = "GCEHQXSV35ZJRBJR3K4Y4VVO44BJI3NHCFR5HHVG5NCRVRSU4ZLM6T5O";
 const ADDRESS_B = "GCK3UYYUG22NJQT2HPLOZL3SREHZP5MLEIKE7LUGLH6XYMB4QEOOXWFD";
+// An scvI128 type tag with no body, so `xdr.ScVal.fromXdr` throws.
+const MALFORMED_XDR = "AAAACg==";
 
 function symbolXdr(value: string): string {
   return nativeToScVal(value, { type: "symbol" }).toXdr("base64");
@@ -264,6 +266,136 @@ describe("processEventsBatch", () => {
 
     const contractRows = await db.select().from(contracts);
     expect(contractRows.map((c) => c.address)).toEqual(["CONTRACT_REGISTERED"]);
+  });
+
+  it("keeps processing the batch when one event has a malformed XDR payload", async () => {
+    const db = getTestDb();
+    await registerContract(db, { address: "CONTRACT_D", network: NETWORK });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    mswServer.use(
+      mockJsonRpc({
+        getLatestLedger: () => buildLatestLedger(5000),
+        getEvents: () => ({
+          events: [
+            buildRawEvent({
+              id: "0000000000000005001-0000000001",
+              contractId: "CONTRACT_D",
+              ledger: 5001,
+              txHash: "1".repeat(64),
+              topic: [symbolXdr("fee")],
+              value: i128Xdr(-100n)
+            }),
+            buildRawEvent({
+              id: "0000000000000005002-0000000001",
+              contractId: "CONTRACT_D",
+              ledger: 5002,
+              txHash: "2".repeat(64),
+              topic: [symbolXdr("fee")],
+              value: MALFORMED_XDR
+            }),
+            buildRawEvent({
+              id: "0000000000000005003-0000000001",
+              contractId: "CONTRACT_D",
+              ledger: 5003,
+              txHash: "3".repeat(64),
+              topic: [symbolXdr("transfer"), addressXdr(ADDRESS_A), addressXdr(ADDRESS_B)],
+              value: i128Xdr(500n)
+            })
+          ],
+          cursor: "CURSOR_MALFORMED",
+          latestLedger: 5003
+        })
+      })
+    );
+
+    try {
+      const { indexedCount, cursor } = await processEventsBatch(db, makeServer());
+      expect(indexedCount).toBe(3);
+      expect(cursor).toBe("CURSOR_MALFORMED");
+
+      const eventRows = await db.select().from(eventsTable).orderBy(eventsTable.ledger);
+      expect(eventRows.map((row) => row.ledger)).toEqual([5001, 5002, 5003]);
+
+      const [valid, malformed, transferEvent] = eventRows.map(
+        (row) =>
+          row.decodedData as {
+            raw: { topic: string[]; value: string };
+            decoded: { topic: unknown[]; value: unknown };
+            decodeErrors?: { field: string; error: string }[];
+          }
+      );
+
+      expect(valid.decoded).toEqual({ topic: ["fee"], value: "-100" });
+      expect(valid.decodeErrors).toBeUndefined();
+
+      expect(malformed.raw.value).toBe(MALFORMED_XDR);
+      expect(malformed.decoded).toEqual({ topic: ["fee"], value: null });
+      expect(malformed.decodeErrors).toEqual([{ field: "value", error: expect.any(String) }]);
+
+      expect(transferEvent.decoded).toEqual({ topic: ["transfer", ADDRESS_A, ADDRESS_B], value: "500" });
+      expect(transferEvent.decodeErrors).toBeUndefined();
+
+      const transferRows = await db.select().from(tokenTransfers);
+      expect(transferRows).toHaveLength(1);
+      expect(transferRows[0].ledger).toBe(5003);
+      expect(transferRows[0].amount).toBe("500");
+
+      const [checkpoint] = await db
+        .select({ cursor: indexerCheckpoints.cursor })
+        .from(indexerCheckpoints)
+        .where(eq(indexerCheckpoints.network, NETWORK));
+      expect(checkpoint?.cursor).toBe("CURSOR_MALFORMED");
+
+      expect(consoleError).toHaveBeenCalledTimes(1);
+      const message = String(consoleError.mock.calls[0][0]);
+      expect(message).toContain("CONTRACT_D");
+      expect(message).toContain("ledger=5002");
+      expect(message).toContain(`tx=${"2".repeat(64)}`);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("stores null for a malformed topic entry and skips transfer detection", async () => {
+    const db = getTestDb();
+    await registerContract(db, { address: "CONTRACT_E", network: NETWORK });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    mswServer.use(
+      mockJsonRpc({
+        getLatestLedger: () => buildLatestLedger(6000),
+        getEvents: () => ({
+          events: [
+            buildRawEvent({
+              contractId: "CONTRACT_E",
+              ledger: 6001,
+              topic: [symbolXdr("transfer"), MALFORMED_XDR, addressXdr(ADDRESS_B)],
+              value: i128Xdr(700n)
+            })
+          ],
+          cursor: "CURSOR_BAD_TOPIC",
+          latestLedger: 6001
+        })
+      })
+    );
+
+    try {
+      await processEventsBatch(db, makeServer());
+
+      const [row] = await db.select().from(eventsTable);
+      const decodedData = row.decodedData as {
+        decoded: { topic: unknown[]; value: unknown };
+        decodeErrors?: { field: string }[];
+      };
+      expect(decodedData.decoded).toEqual({ topic: ["transfer", null, ADDRESS_B], value: "700" });
+      expect(decodedData.decodeErrors?.map((e) => e.field)).toEqual(["topic[1]"]);
+
+      expect(await db.select().from(tokenTransfers)).toHaveLength(0);
+      expect(consoleError).toHaveBeenCalledTimes(1);
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it("returns a null cursor and skips the rpc call when no contracts are registered", async () => {
