@@ -48,6 +48,25 @@ describe("ApiKeyGuard", () => {
     await expect(guard().canActivate(context)).rejects.toThrow(UnauthorizedException);
   });
 
+  it("rejects an api key whose expiresAt has passed", async () => {
+    const db = getTestDb();
+    const apiKey = await createApiKey(db);
+    await db.update(apiKeys).set({ expiresAt: new Date(Date.now() - 60_000) });
+
+    const { context } = contextFor(TestController.prototype.protected, { "x-api-key": apiKey });
+    await expect(guard().canActivate(context)).rejects.toThrow(UnauthorizedException);
+  });
+
+  it("accepts an api key whose expiresAt is in the future", async () => {
+    const db = getTestDb();
+    const apiKey = await createApiKey(db);
+    await db.update(apiKeys).set({ expiresAt: new Date(Date.now() + 60_000) });
+
+    const { context, request } = contextFor(TestController.prototype.protected, { "x-api-key": apiKey });
+    await expect(guard().canActivate(context)).resolves.toBe(true);
+    expect(request.apiKey).toBeDefined();
+  });
+
   it("accepts a valid key and attaches it to the request", async () => {
     const apiKey = await createApiKey(getTestDb());
     const { context, request } = contextFor(TestController.prototype.protected, { "x-api-key": apiKey });

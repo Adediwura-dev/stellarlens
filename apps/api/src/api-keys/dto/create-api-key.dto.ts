@@ -1,4 +1,4 @@
-import { IsEnum, IsOptional, IsString } from "class-validator";
+import { IsEnum, IsISO8601, IsOptional, IsString } from "class-validator";
 
 
 export enum ApiKeyScope {
@@ -14,4 +14,8 @@ export class CreateApiKeyDto {
   @IsOptional()
   @IsEnum(ApiKeyScope)
   scope?: ApiKeyScope;
+
+  @IsOptional()
+  @IsISO8601()
+  expiresAt?: string;
 }

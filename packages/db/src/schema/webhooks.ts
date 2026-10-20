@@ -1,5 +1,6 @@
-import { index, integer, pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
+import { bigint, index, integer, pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
 import { contracts } from "./contracts.js";
+import { events } from "./events.js";
 
 export const webhooks = pgTable(
   "webhooks",
@@ -23,11 +24,17 @@ export const webhookDeliveries = pgTable(
     webhookId: integer("webhook_id")
       .notNull()
       .references(() => webhooks.id, { onDelete: "cascade" }),
+    eventId: bigint("event_id", { mode: "number" })
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
     status: text("status").notNull(),
     attempts: integer("attempts").default(0).notNull(),
     lastError: text("last_error"),
     deliveredAt: timestamp("delivered_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull()
   },
-  (table) => [index("webhook_deliveries_webhook_id_idx").on(table.webhookId)]
+  (table) => [
+    index("webhook_deliveries_webhook_id_idx").on(table.webhookId),
+    index("webhook_deliveries_event_id_idx").on(table.eventId)
+  ]
 );

@@ -1,5 +1,5 @@
 {
-  "id": "1cd8788b-7f85-4cb0-bd14-aa52d522e5d2",
+  "id": "8bf214ae-0edd-4e53-8193-27fae0cbb2c2",
   "prevId": "ac5b34fc-d41c-445d-a0cb-c815c5a5fd5b",
   "version": "7",
   "dialect": "postgresql",
@@ -393,6 +393,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "event_id": {
+          "name": "event_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
         "status": {
           "name": "status",
           "type": "text",
@@ -441,6 +447,21 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "webhook_deliveries_event_id_idx": {
+          "name": "webhook_deliveries_event_id_idx",
+          "columns": [
+            {
+              "expression": "event_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -450,6 +471,19 @@
           "tableTo": "webhooks",
           "columnsFrom": [
             "webhook_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "webhook_deliveries_event_id_events_id_fk": {
+          "name": "webhook_deliveries_event_id_events_id_fk",
+          "tableFrom": "webhook_deliveries",
+          "tableTo": "events",
+          "columnsFrom": [
+            "event_id"
           ],
           "columnsTo": [
             "id"

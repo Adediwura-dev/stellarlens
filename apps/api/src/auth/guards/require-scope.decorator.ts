@@ -1,5 +1,5 @@
 import { SetMetadata } from "@nestjs/common";
+import type { ApiKeyScope } from "@stellarlens/db";
 
-export const REQUIRE_SCOPE_KEY = "requireScope";
-
-export const RequireScope = (scope: string) => SetMetadata(REQUIRE_SCOPE_KEY, scope);
+export const REQUIRED_SCOPE_KEY = "requiredScope";
+export const RequireScope = (scope: ApiKeyScope) => SetMetadata(REQUIRED_SCOPE_KEY, scope);

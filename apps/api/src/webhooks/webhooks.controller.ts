@@ -26,6 +26,11 @@ export class WebhooksController {
     return this.webhooksService.findDeliveries(contractId, id, query);
   }
 
+  @Post(":id/rotate-secret")
+  rotateSecret(@Param("contractId", ParseIntPipe) contractId: number, @Param("id", ParseIntPipe) id: number) {
+    return this.webhooksService.rotateSecret(contractId, id);
+  }
+
   @Delete(":id")
   @HttpCode(HttpStatus.NO_CONTENT)
   remove(@Param("contractId", ParseIntPipe) contractId: number, @Param("id", ParseIntPipe) id: number) {

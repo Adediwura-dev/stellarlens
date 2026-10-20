@@ -9,9 +9,10 @@ import {
 } from "@nestjs/common";
 import { Reflector } from "@nestjs/core";
 import { and, eq, isNull } from "drizzle-orm";
-import { apiKeys, type Database } from "@stellarlens/db";
+import { apiKeys, type ApiKeyScope, type Database } from "@stellarlens/db";
 import { DATABASE } from "../../database/database.module";
 import { IS_PUBLIC_KEY } from "../decorators/public.decorator";
+import { REQUIRED_SCOPE_KEY } from "./require-scope.decorator";
 
 const MUTATING_METHODS = new Set(["POST", "PATCH", "PUT", "DELETE"]);
 
@@ -47,9 +48,21 @@ export class ApiKeyGuard implements CanActivate {
       throw new UnauthorizedException("invalid api key");
     }
 
+    if (apiKey.expiresAt && apiKey.expiresAt.getTime() <= Date.now()) {
+      throw new UnauthorizedException("invalid api key");
+    }
+
     const method = String(request.method ?? "").toUpperCase();
     if (apiKey.scope === "read" && MUTATING_METHODS.has(method)) {
       throw new ForbiddenException("read-only api key cannot perform mutating requests");
+    }
+
+    const requiredScope = this.reflector.getAllAndOverride<ApiKeyScope>(REQUIRED_SCOPE_KEY, [
+      context.getHandler(),
+      context.getClass()
+    ]);
+    if (requiredScope === "full" && apiKey.scope !== "full") {
+      throw new ForbiddenException(`api key requires the "${requiredScope}" scope`);
     }
 
     request.apiKey = apiKey;

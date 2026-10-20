@@ -1,12 +1,19 @@
 import { createHmac } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { nativeToScVal, rpc } from "@stellar/stellar-sdk";
-import { contracts, webhooks as webhooksTable } from "@stellarlens/db";
+import {
+  contracts,
+  events as eventsTable,
+  webhookDeliveries,
+  webhooks as webhooksTable,
+  type Database
+} from "@stellarlens/db";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it, vi } from "vitest";
-import { STELLAR_NETWORK as NETWORK } from "../src/config.js";
+import { WEBHOOK_MAX_RETRIES, STELLAR_NETWORK as NETWORK } from "../src/config.js";
 import { processEventsBatch } from "../src/events.js";
 import { registerContract } from "../src/registry.js";
+import { deliverWebhooksForEvent } from "../src/webhooks.js";
 import { mockJsonRpc, TEST_RPC_URL } from "./rpc-mocks.js";
 import { getTestDb, mswServer } from "./setup.js";
 
@@ -86,6 +93,137 @@ describe("webhook delivery", () => {
     expect(payload.contractId).toBe(contract.id);
     expect(payload.ledger).toBe(5005);
     expect(payload.txHash).toBe("d".repeat(64));
+  });
+
+  it("persists a successful delivery with its attempt count and deliveredAt", async () => {
+    const db = getTestDb();
+    const contract = await registerContract(db, { address: "CONTRACT_HOOK_DELIVERY_SUCCESS", network: NETWORK });
+    await registerWebhook(contract.id, "success-secret");
+
+    mswServer.use(
+      mockJsonRpc({
+        getLatestLedger: () => buildLatestLedger(5100),
+        getEvents: () => ({
+          events: [
+            {
+              id: "0000000000000000000-0000000000",
+              ledger: 5105,
+              txHash: "c".repeat(64),
+              contractId: "CONTRACT_HOOK_DELIVERY_SUCCESS",
+              topic: [symbolXdr("fee")],
+              value: i128Xdr(-10n)
+            }
+          ],
+          cursor: "CURSOR_HOOK_DELIVERY_SUCCESS",
+          latestLedger: 5105
+        })
+      }),
+      http.post(WEBHOOK_URL, () => HttpResponse.json({ ok: true }))
+    );
+
+    const { indexedCount } = await processEventsBatch(db, makeServer());
+    expect(indexedCount).toBe(1);
+
+    const [event] = await db.select().from(eventsTable);
+    const [delivery] = await db.select().from(webhookDeliveries);
+
+    expect(delivery).toBeDefined();
+    expect(delivery.webhookId).toBeTypeOf("number");
+    expect(delivery.eventId).toBe(event.id);
+    expect(delivery.status).toBe("success");
+    expect(delivery.attempts).toBe(1);
+    expect(delivery.lastError).toBeNull();
+    expect(delivery.deliveredAt).toBeInstanceOf(Date);
+  });
+
+  it("persists a failed delivery after retries are exhausted", { timeout: 15000 }, async () => {
+    const db = getTestDb();
+    const contract = await registerContract(db, { address: "CONTRACT_HOOK_DELIVERY_FAILED", network: NETWORK });
+    await registerWebhook(contract.id, "failed-secret");
+
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const webhookSpy = vi.fn(() => new HttpResponse(null, { status: 500 }));
+
+    mswServer.use(
+      mockJsonRpc({
+        getLatestLedger: () => buildLatestLedger(5200),
+        getEvents: () => ({
+          events: [
+            {
+              id: "0000000000000000000-0000000000",
+              ledger: 5205,
+              txHash: "1".repeat(64),
+              contractId: "CONTRACT_HOOK_DELIVERY_FAILED",
+              topic: [symbolXdr("fee")],
+              value: i128Xdr(-2n)
+            }
+          ],
+          cursor: "CURSOR_HOOK_DELIVERY_FAILED",
+          latestLedger: 5205
+        })
+      }),
+      http.post(WEBHOOK_URL, webhookSpy)
+    );
+
+    const { indexedCount } = await processEventsBatch(db, makeServer());
+    consoleError.mockRestore();
+
+    expect(indexedCount).toBe(1);
+    expect(webhookSpy).toHaveBeenCalledTimes(WEBHOOK_MAX_RETRIES + 1);
+
+    const [event] = await db.select().from(eventsTable);
+    const [delivery] = await db.select().from(webhookDeliveries);
+
+    expect(delivery).toBeDefined();
+    expect(delivery.eventId).toBe(event.id);
+    expect(delivery.status).toBe("failed");
+    expect(delivery.attempts).toBe(WEBHOOK_MAX_RETRIES + 1);
+    expect(delivery.lastError).toContain("status 500");
+    expect(delivery.deliveredAt).toBeNull();
+  });
+
+  it("does not throw when persisting a delivery outcome fails", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const failingDb = {
+      select: () => ({
+        from: () => ({
+          where: async () => [
+            {
+              id: 1,
+              contractId: 1,
+              url: WEBHOOK_URL,
+              secret: "secret",
+              eventTypes: null,
+              createdAt: new Date()
+            }
+          ]
+        })
+      }),
+      insert: () => ({
+        values: async () => {
+          throw new Error("database unavailable");
+        }
+      })
+    } as unknown as Database;
+
+    mswServer.use(http.post(WEBHOOK_URL, () => HttpResponse.json({ ok: true })));
+
+    await expect(
+      deliverWebhooksForEvent(failingDb, {
+        eventId: 42,
+        contractId: 1,
+        ledger: 1,
+        txHash: "2".repeat(64),
+        topic: ["fee"],
+        value: "-1"
+      })
+    ).resolves.toBeUndefined();
+
+    expect(consoleError).toHaveBeenCalledWith(
+      expect.stringContaining("delivery outcome could not be persisted"),
+      expect.any(Error)
+    );
+    consoleError.mockRestore();
   });
 
   it("retries a failing webhook before giving up, without failing the indexing batch", async () => {

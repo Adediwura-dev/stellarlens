@@ -84,4 +84,51 @@ describe("events (e2e)", () => {
     const response = await request(getApp().getHttpServer()).get("/contracts/999999/events").set("x-api-key", apiKey);
     expect(response.status).toBe(404);
   });
+
+  it("filters events by any of multiple topics", async () => {
+    const contractId = await registerContract(apiKey, "CONTRACT_EVENTS_TOPICS");
+    const db = getTestDb();
+    const topicSets = [["fee"], ["transfer"], ["mint"], ["burn"]];
+    for (let i = 0; i < topicSets.length; i += 1) {
+      await db.insert(events).values({
+        contractId,
+        ledger: 2000 + i,
+        txHash: i.toString().repeat(64).slice(0, 64),
+        topic: JSON.stringify(topicSets[i])
+      });
+    }
+
+    const response = await request(getApp().getHttpServer())
+      .get(`/contracts/${contractId}/events`)
+      .query({ topics: "fee,transfer" })
+      .set("x-api-key", apiKey);
+
+    expect(response.status).toBe(200);
+    expect(response.body.data).toHaveLength(2);
+    const ledgers = response.body.data.map((event: { ledger: number }) => event.ledger).sort();
+    expect(ledgers).toEqual([2000, 2001]);
+  });
+
+  it("still filters events by a single topic", async () => {
+    const contractId = await registerContract(apiKey, "CONTRACT_EVENTS_SINGLE_TOPIC");
+    const db = getTestDb();
+    const topicSets = [["fee"], ["transfer"], ["mint"]];
+    for (let i = 0; i < topicSets.length; i += 1) {
+      await db.insert(events).values({
+        contractId,
+        ledger: 3000 + i,
+        txHash: i.toString().repeat(64).slice(0, 64),
+        topic: JSON.stringify(topicSets[i])
+      });
+    }
+
+    const response = await request(getApp().getHttpServer())
+      .get(`/contracts/${contractId}/events`)
+      .query({ topic: "transfer" })
+      .set("x-api-key", apiKey);
+
+    expect(response.status).toBe(200);
+    expect(response.body.data).toHaveLength(1);
+    expect(response.body.data[0].ledger).toBe(3001);
+  });
 });

@@ -1,4 +1,4 @@
-import { webhookDeliveries } from "@stellarlens/db";
+import { events, webhookDeliveries } from "@stellarlens/db";
 import request from "supertest";
 import { beforeEach, describe, expect, it } from "vitest";
 import { createApiKey } from "./helpers";
@@ -138,9 +138,14 @@ describe("webhooks (e2e)", () => {
     const webhookId = created.body.id;
 
     const db = getTestDb();
+    const [event] = await db
+      .insert(events)
+      .values({ contractId, ledger: 1, txHash: "a".repeat(64), topic: "[]" })
+      .returning({ id: events.id });
     for (let i = 0; i < 3; i += 1) {
       await db.insert(webhookDeliveries).values({
         webhookId,
+        eventId: event.id,
         status: i === 2 ? "failed" : "delivered",
         attempts: i + 1,
         lastError: i === 2 ? "connection refused" : null,
@@ -180,6 +185,49 @@ describe("webhooks (e2e)", () => {
 
     const response = await request(getApp().getHttpServer())
       .get(`/contracts/${contractB}/webhooks/${created.body.id}/deliveries`)
+      .set("x-api-key", apiKey);
+
+    expect(response.status).toBe(404);
+  });
+
+  it("rotates a webhook secret, returning the new secret once and leaving config untouched", async () => {
+    const contractId = await registerContract(apiKey, "CONTRACT_WEBHOOKS_M");
+    const created = await request(getApp().getHttpServer())
+      .post(`/contracts/${contractId}/webhooks`)
+      .set("x-api-key", apiKey)
+      .send({ url: "https://example.com/webhook", eventTypes: ["transfer", "mint"] });
+    const originalSecret = created.body.secret;
+
+    const rotateResponse = await request(getApp().getHttpServer())
+      .post(`/contracts/${contractId}/webhooks/${created.body.id}/rotate-secret`)
+      .set("x-api-key", apiKey);
+
+    expect([200, 201]).toContain(rotateResponse.status);
+    expect(typeof rotateResponse.body.secret).toBe("string");
+    expect(rotateResponse.body.secret.length).toBeGreaterThan(0);
+    expect(rotateResponse.body.secret).not.toBe(originalSecret);
+
+    const listResponse = await request(getApp().getHttpServer())
+      .get(`/contracts/${contractId}/webhooks`)
+      .set("x-api-key", apiKey);
+
+    expect(listResponse.status).toBe(200);
+    expect(listResponse.body).toHaveLength(1);
+    expect(listResponse.body[0].url).toBe("https://example.com/webhook");
+    expect(listResponse.body[0].eventTypes).toEqual(["transfer", "mint"]);
+    expect(listResponse.body[0].secret).toBeUndefined();
+  });
+
+  it("returns 404 rotating the secret of a webhook that doesn't belong to the contract", async () => {
+    const contractA = await registerContract(apiKey, "CONTRACT_WEBHOOKS_N");
+    const contractB = await registerContract(apiKey, "CONTRACT_WEBHOOKS_O");
+    const created = await request(getApp().getHttpServer())
+      .post(`/contracts/${contractA}/webhooks`)
+      .set("x-api-key", apiKey)
+      .send({ url: "https://example.com/webhook" });
+
+    const response = await request(getApp().getHttpServer())
+      .post(`/contracts/${contractB}/webhooks/${created.body.id}/rotate-secret`)
       .set("x-api-key", apiKey);
 
     expect(response.status).toBe(404);

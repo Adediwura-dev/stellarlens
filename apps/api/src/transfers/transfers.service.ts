@@ -20,6 +20,18 @@ export class TransfersService {
     if (query.cursor !== undefined) {
       conditions.push(gt(tokenTransfers.id, query.cursor));
     }
+    if (query.minAmount !== undefined) {
+      conditions.push(gte(tokenTransfers.amount, query.minAmount));
+    }
+    if (query.maxAmount !== undefined) {
+      conditions.push(lte(tokenTransfers.amount, query.maxAmount));
+    }
+    if (query.from !== undefined) {
+      conditions.push(eq(tokenTransfers.from, query.from));
+    }
+    if (query.to !== undefined) {
+      conditions.push(eq(tokenTransfers.to, query.to));
+    }
 
     const rows = await this.db
       .select()

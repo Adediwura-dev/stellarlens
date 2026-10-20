@@ -43,6 +43,23 @@ export class WebhooksService {
       .where(eq(webhooks.contractId, contractId));
   }
 
+  async rotateSecret(contractId: number, id: number) {
+    await this.contractsService.findOne(contractId);
+
+    const secret = randomBytes(32).toString("hex");
+    const [webhook] = await this.db
+      .update(webhooks)
+      .set({ secret })
+      .where(and(eq(webhooks.id, id), eq(webhooks.contractId, contractId)))
+      .returning();
+
+    if (!webhook) {
+      throw new NotFoundException(`webhook ${id} not found for contract ${contractId}`);
+    }
+
+    return webhook;
+  }
+
   async remove(contractId: number, id: number) {
     await this.contractsService.findOne(contractId);
 

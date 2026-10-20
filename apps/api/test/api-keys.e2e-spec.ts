@@ -69,4 +69,34 @@ describe("api keys (e2e)", () => {
     const response = await request(getApp().getHttpServer()).delete("/api-keys/999999").set("x-api-key", apiKey);
     expect(response.status).toBe(404);
   });
+
+  it("rejects an expired key and accepts a key that has not yet expired", async () => {
+    const pastExpiry = new Date(Date.now() - 60_000).toISOString();
+    const expiredCreate = await request(getApp().getHttpServer())
+      .post("/api-keys")
+      .set("x-api-key", apiKey)
+      .send({ name: "expired-key", expiresAt: pastExpiry });
+    expect(expiredCreate.status).toBe(201);
+    expect(expiredCreate.body.expiresAt).toBeDefined();
+    expect(new Date(expiredCreate.body.expiresAt).toISOString()).toBe(pastExpiry);
+
+    const useExpiredKey = await request(getApp().getHttpServer())
+      .get("/contracts")
+      .set("x-api-key", expiredCreate.body.key);
+    expect(useExpiredKey.status).toBe(401);
+
+    const futureExpiry = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    const validCreate = await request(getApp().getHttpServer())
+      .post("/api-keys")
+      .set("x-api-key", apiKey)
+      .send({ name: "valid-key", expiresAt: futureExpiry });
+    expect(validCreate.status).toBe(201);
+    expect(validCreate.body.expiresAt).toBeDefined();
+    expect(new Date(validCreate.body.expiresAt).toISOString()).toBe(futureExpiry);
+
+    const useValidKey = await request(getApp().getHttpServer())
+      .get("/contracts")
+      .set("x-api-key", validCreate.body.key);
+    expect(useValidKey.status).toBe(200);
+  });
 });

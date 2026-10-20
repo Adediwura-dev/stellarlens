@@ -31,6 +31,13 @@ export class EventsService {
         sql`${events.decodedData} -> 'decoded' -> 'topic' @> ${JSON.stringify([query.topic])}::jsonb`
       );
     }
+    if (query.topics && query.topics.length > 0) {
+      conditions.push(
+        sql`${events.decodedData} -> 'decoded' -> 'topic' ?| ${sql.raw(
+          `ARRAY[${query.topics.map((t) => `'${t.replace(/'/g, "''")}'`).join(", ")}]::text[]`
+        )}`
+      );
+    }
 
     const rows = await this.db
       .select()

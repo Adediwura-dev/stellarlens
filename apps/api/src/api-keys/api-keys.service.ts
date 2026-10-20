@@ -13,11 +13,18 @@ export class ApiKeysService {
     const rawKey = randomBytes(24).toString("hex");
     const keyHash = createHash("sha256").update(rawKey).digest("hex");
     const scope = dto.scope ?? "full";
+    const expiresAt = dto.expiresAt ? new Date(dto.expiresAt) : null;
 
     const [apiKey] = await this.db
       .insert(apiKeys)
-      .values({ keyHash, name: dto.name ?? null, scope })
-      .returning({ scope: apiKeys.scope, id: apiKeys.id, name: apiKeys.name, createdAt: apiKeys.createdAt });
+      .values({ keyHash, name: dto.name ?? null, scope, expiresAt })
+      .returning({
+        scope: apiKeys.scope,
+        id: apiKeys.id,
+        name: apiKeys.name,
+        createdAt: apiKeys.createdAt,
+        expiresAt: apiKeys.expiresAt
+      });
 
     return { ...apiKey, key: rawKey };
   }
