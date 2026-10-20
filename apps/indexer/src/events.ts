@@ -1,6 +1,11 @@
 import { eq } from "drizzle-orm";
 import type { rpc } from "@stellar/stellar-sdk";
-import { events as eventsTable, indexerCheckpoints, tokenTransfers, type Database } from "@stellarlens/db";
+import {
+  events as eventsTable,
+  indexerCheckpoints,
+  tokenTransfers,
+  type Database
+} from "@stellarlens/db";
 import { EVENTS_BATCH_LIMIT, STELLAR_NETWORK } from "./config.js";
 import { tryDecodeScVal } from "./decode.js";
 import { loadRegisteredContracts } from "./registry.js";
@@ -59,7 +64,10 @@ export interface ProcessEventsBatchResult {
   cursor: string | null;
 }
 
-export async function processEventsBatch(db: Database, server: rpc.Server): Promise<ProcessEventsBatchResult> {
+export async function processEventsBatch(
+  db: Database,
+  server: rpc.Server
+): Promise<ProcessEventsBatchResult> {
   const registeredContracts = await loadRegisteredContracts(db, STELLAR_NETWORK);
   if (registeredContracts.size === 0) {
     return { indexedCount: 0, cursor: null };
@@ -119,6 +127,7 @@ export async function processEventsBatch(db: Database, server: rpc.Server): Prom
       webhookPayloads.push({
         eventId: insertedEvent.id,
         contractId,
+        contractAddress: event.contractId,
         ledger: event.ledger,
         txHash: event.txHash,
         topic: decodedTopic,
@@ -127,15 +136,18 @@ export async function processEventsBatch(db: Database, server: rpc.Server): Prom
 
       const transfer = detectTransfer(decodedTopic, decodedValue);
       if (transfer) {
-        await tx.insert(tokenTransfers).values({
-          contractId,
-          from: transfer.from,
-          to: transfer.to,
-          amount: transfer.amount,
-          asset: event.contractId,
-          txHash: event.txHash,
-          ledger: event.ledger
-        });
+        await tx
+          .insert(tokenTransfers)
+          .values({
+            contractId,
+            from: transfer.from,
+            to: transfer.to,
+            amount: transfer.amount,
+            asset: event.contractId,
+            txHash: event.txHash,
+            ledger: event.ledger
+          })
+          .onConflictDoNothing();
       }
     }
 
