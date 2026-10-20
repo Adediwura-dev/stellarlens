@@ -97,7 +97,7 @@ export async function processEventsBatch(db: Database, server: rpc.Server): Prom
           asset: event.contractId,
           txHash: event.txHash,
           ledger: event.ledger
-        });
+        }).onConflictDoNothing();
       }
     }
 
