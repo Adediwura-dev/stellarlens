@@ -34,9 +34,21 @@ export class ContractsService {
   }
 
   async update(id: number, dto: UpdateContractDto) {
+    const values: { name?: string | null; network?: string } = {};
+    if (dto.name !== undefined) {
+      values.name = dto.name;
+    }
+    if (dto.network !== undefined) {
+      values.network = dto.network;
+    }
+
+    if (Object.keys(values).length === 0) {
+      return this.findOne(id);
+    }
+
     const [contract] = await this.db
       .update(contracts)
-      .set({ name: dto.name ?? null })
+      .set(values)
       .where(eq(contracts.id, id))
       .returning();
 

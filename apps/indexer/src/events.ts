@@ -1,8 +1,13 @@
 import { eq } from "drizzle-orm";
 import type { rpc } from "@stellar/stellar-sdk";
-import { events as eventsTable, indexerCheckpoints, tokenTransfers, type Database } from "@stellarlens/db";
+import {
+  events as eventsTable,
+  indexerCheckpoints,
+  tokenTransfers,
+  type Database
+} from "@stellarlens/db";
 import { EVENTS_BATCH_LIMIT, STELLAR_NETWORK } from "./config.js";
-import { decodeScVal } from "./decode.js";
+import { tryDecodeScVal } from "./decode.js";
 import { loadRegisteredContracts } from "./registry.js";
 import { detectTransfer } from "./transfers.js";
 import { withRetry } from "./retry.js";
@@ -16,12 +21,53 @@ async function getStoredCursor(db: Database): Promise<string | undefined> {
   return row?.cursor;
 }
 
+type RawEvent = Awaited<ReturnType<rpc.Server["_getEvents"]>>["events"][number];
+
+interface DecodeError {
+  field: string;
+  error: string;
+}
+
+interface DecodedEventPayload {
+  decodedTopic: unknown[];
+  decodedValue: unknown;
+  decodeErrors: DecodeError[];
+}
+
+function decodeEventPayload(event: RawEvent): DecodedEventPayload {
+  const decodeErrors: DecodeError[] = [];
+
+  const decodeField = (field: string, base64Xdr: string): unknown => {
+    const result = tryDecodeScVal(base64Xdr);
+    if (result.ok) {
+      return result.value;
+    }
+    decodeErrors.push({ field, error: result.error });
+    return null;
+  };
+
+  const decodedTopic = (event.topic ?? []).map((topic, index) => decodeField(`topic[${index}]`, topic));
+  const decodedValue = decodeField("value", event.value);
+
+  if (decodeErrors.length > 0) {
+    const details = decodeErrors.map(({ field, error }) => `${field}: ${error}`).join("; ");
+    console.error(
+      `failed to decode event ${event.id} (contract=${event.contractId}, ledger=${event.ledger}, tx=${event.txHash}): ${details}`
+    );
+  }
+
+  return { decodedTopic, decodedValue, decodeErrors };
+}
+
 export interface ProcessEventsBatchResult {
   indexedCount: number;
   cursor: string | null;
 }
 
-export async function processEventsBatch(db: Database, server: rpc.Server): Promise<ProcessEventsBatchResult> {
+export async function processEventsBatch(
+  db: Database,
+  server: rpc.Server
+): Promise<ProcessEventsBatchResult> {
   const registeredContracts = await loadRegisteredContracts(db, STELLAR_NETWORK);
   if (registeredContracts.size === 0) {
     return { indexedCount: 0, cursor: null };
@@ -51,8 +97,7 @@ export async function processEventsBatch(db: Database, server: rpc.Server): Prom
       indexedCount += 1;
 
       const rawTopic = event.topic ?? [];
-      const decodedTopic = rawTopic.map(decodeScVal);
-      const decodedValue = decodeScVal(event.value);
+      const { decodedTopic, decodedValue, decodeErrors } = decodeEventPayload(event);
 
       const [insertedEvent] = await tx
         .insert(eventsTable)
@@ -73,7 +118,8 @@ export async function processEventsBatch(db: Database, server: rpc.Server): Prom
             decoded: {
               topic: decodedTopic,
               value: decodedValue
-            }
+            },
+            ...(decodeErrors.length > 0 && { decodeErrors })
           }
         })
         .returning({ id: eventsTable.id });
@@ -81,6 +127,7 @@ export async function processEventsBatch(db: Database, server: rpc.Server): Prom
       webhookPayloads.push({
         eventId: insertedEvent.id,
         contractId,
+        contractAddress: event.contractId,
         ledger: event.ledger,
         txHash: event.txHash,
         topic: decodedTopic,
@@ -89,15 +136,18 @@ export async function processEventsBatch(db: Database, server: rpc.Server): Prom
 
       const transfer = detectTransfer(decodedTopic, decodedValue);
       if (transfer) {
-        await tx.insert(tokenTransfers).values({
-          contractId,
-          from: transfer.from,
-          to: transfer.to,
-          amount: transfer.amount,
-          asset: event.contractId,
-          txHash: event.txHash,
-          ledger: event.ledger
-        });
+        await tx
+          .insert(tokenTransfers)
+          .values({
+            contractId,
+            from: transfer.from,
+            to: transfer.to,
+            amount: transfer.amount,
+            asset: event.contractId,
+            txHash: event.txHash,
+            ledger: event.ledger
+          })
+          .onConflictDoNothing();
       }
     }
 

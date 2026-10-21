@@ -19,3 +19,13 @@ export function decodeScVal(base64Xdr: string): unknown {
   const scVal = xdr.ScVal.fromXdr(base64Xdr, "base64");
   return toJsonSafe(scValToNative(scVal));
 }
+
+export type DecodeResult = { ok: true; value: unknown } | { ok: false; error: string };
+
+export function tryDecodeScVal(base64Xdr: string): DecodeResult {
+  try {
+    return { ok: true, value: decodeScVal(base64Xdr) };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}

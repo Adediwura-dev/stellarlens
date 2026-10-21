@@ -32,4 +32,8 @@ export class FindTransfersQueryDto {
   @IsOptional()
   @IsString()
   to?: string;
+
+  @IsOptional()
+  @IsString()
+  asset?: string;
 }
